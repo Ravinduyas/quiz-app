@@ -10,7 +10,8 @@ import {
 /* ------------------------------------------------------------------ */
 /* storage helpers                                                     */
 /* ------------------------------------------------------------------ */
-const DB_KEY = "quizforge:db:v2";
+const DB_KEY = "quizforge:db:v3";
+const SESSION_KEY = "quizforge:session:v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 async function loadDb() {
@@ -25,12 +26,32 @@ async function persistDb(db) {
   catch (e) { console.error("persist failed", e); }
 }
 
+// Session = the id of the currently logged-in user (or null). Prototype only:
+// this is a browser-local "login", not server-verified authentication.
+async function loadSession() {
+  try {
+    const r = await window.storage.get(SESSION_KEY);
+    if (r && r.value) return JSON.parse(r.value);
+  } catch (e) { /* no active session */ }
+  return null;
+}
+async function persistSession(userId) {
+  try { await window.storage.set(SESSION_KEY, JSON.stringify(userId)); }
+  catch (e) { console.error("session persist failed", e); }
+}
+
 /* ------------------------------------------------------------------ */
 /* seed data                                                           */
 /* ------------------------------------------------------------------ */
 function seed() {
+  // Demo accounts so the prototype isn't empty on first load.
+  const teacher = { id: uid(), role: "teacher", name: "Demo Teacher", email: "teacher@demo.com", password: "demo123", createdAt: Date.now() };
+  const maya = { id: uid(), role: "student", name: "Maya Fernando", email: "maya@demo.com", password: "demo123", createdAt: Date.now() };
+  const dev = { id: uid(), role: "student", name: "Dev Perera", email: "dev@demo.com", password: "demo123", createdAt: Date.now() };
+  const users = [teacher, maya, dev];
+
   const q = (topic, difficulty, text, options, correct, explanation) =>
-    ({ id: uid(), topic, difficulty, text, options, correct, explanation });
+    ({ id: uid(), ownerId: teacher.id, topic, difficulty, text, options, correct, explanation });
 
   const questions = [
     q("Ancient", "Easy", "Which ancient city was the first kingdom and capital of Sri Lanka?", ["Polonnaruwa", "Anuradhapura", "Kandy", "Sigiriya"], 1, "Anuradhapura was Sri Lanka's first established kingdom, from around the 4th century BCE."),
@@ -50,14 +71,13 @@ function seed() {
     q("Modern", "Hard", "Sri Lanka's long civil war came to an end in which year?", ["2004", "2009", "2012", "2015"], 1, "The civil war ended in May 2009."),
   ];
 
-  const byTopic = (t) => questions.filter(x => x.topic === t).map(x => x.id);
   const papers = [
-    { id: uid(), title: "Sri Lankan History Midterm", desc: "Mixed eras, balanced difficulty", questionIds: [questions[0].id, questions[3].id, questions[6].id, questions[9].id, questions[12].id, questions[1].id, questions[4].id, questions[7].id], timeLimitMin: 10, passMark: 50, antiCheat: "strict" },
-    { id: uid(), title: "Heritage Challenge", desc: "Harder questions across the eras", questionIds: [questions[2].id, questions[5].id, questions[8].id, questions[14].id, questions[11].id], timeLimitMin: 8, passMark: 60, antiCheat: "moderate" },
+    { id: uid(), ownerId: teacher.id, title: "Sri Lankan History Midterm", desc: "Mixed eras, balanced difficulty", questionIds: [questions[0].id, questions[3].id, questions[6].id, questions[9].id, questions[12].id, questions[1].id, questions[4].id, questions[7].id], timeLimitMin: 10, passMark: 50, antiCheat: "strict" },
+    { id: uid(), ownerId: teacher.id, title: "Heritage Challenge", desc: "Harder questions across the eras", questionIds: [questions[2].id, questions[5].id, questions[8].id, questions[14].id, questions[11].id], timeLimitMin: 8, passMark: 60, antiCheat: "moderate" },
   ];
 
   // a couple of historic attempts so analytics aren't empty
-  const mkAttempt = (paper, student, picks, daysAgo, violations, secs) => {
+  const mkAttempt = (paper, studentUser, picks, daysAgo, violations, secs) => {
     const detail = paper.questionIds.map((qid, i) => {
       const qq = questions.find(x => x.id === qid);
       const chosen = picks[i];
@@ -65,7 +85,8 @@ function seed() {
     });
     const score = detail.filter(d => d.isCorrect).length;
     return {
-      id: uid(), paperId: paper.id, paperTitle: paper.title, student,
+      id: uid(), paperId: paper.id, paperTitle: paper.title,
+      studentId: studentUser.id, student: studentUser.name,
       detail, score, total: detail.length,
       percent: Math.round((score / detail.length) * 100),
       passMark: paper.passMark, timeSpentSec: secs, violations,
@@ -75,15 +96,26 @@ function seed() {
 
   const p1 = papers[0];
   const attempts = [
-    mkAttempt(p1, "Maya Fernando", [1, 1, 2, 2, 1, 1, 1, 1], 14, 0, 410),
-    mkAttempt(p1, "Maya Fernando", [1, 1, 2, 2, 1, 1, 1, 0], 7, 1, 360),
-    mkAttempt(p1, "Maya Fernando", [1, 1, 2, 2, 1, 1, 0, 1], 1, 0, 300),
-    mkAttempt(p1, "Dev Perera", [0, 1, 2, 2, 1, 0, 0, 1], 5, 3, 540),
-    mkAttempt(p1, "Dev Perera", [1, 0, 2, 1, 1, 1, 0, 1], 1, 2, 520),
+    mkAttempt(p1, maya, [1, 1, 2, 2, 1, 1, 1, 1], 14, 0, 410),
+    mkAttempt(p1, maya, [1, 1, 2, 2, 1, 1, 1, 0], 7, 1, 360),
+    mkAttempt(p1, maya, [1, 1, 2, 2, 1, 1, 0, 1], 1, 0, 300),
+    mkAttempt(p1, dev, [0, 1, 2, 2, 1, 0, 0, 1], 5, 3, 540),
+    mkAttempt(p1, dev, [1, 0, 2, 1, 1, 1, 0, 1], 1, 2, 520),
   ];
 
-  return { questions, papers, attempts };
+  return { users, questions, papers, attempts };
 }
+
+/* ------------------------------------------------------------------ */
+/* data scoping selectors                                              */
+/* ------------------------------------------------------------------ */
+const teacherQuestions = (db, me) => db.questions.filter(q => q.ownerId === me.id);
+const teacherPapers = (db, me) => db.papers.filter(p => p.ownerId === me.id);
+const teacherAttempts = (db, me) => {
+  const ids = new Set(teacherPapers(db, me).map(p => p.id));
+  return db.attempts.filter(a => ids.has(a.paperId));
+};
+const studentAttempts = (db, me) => db.attempts.filter(a => a.studentId === me.id);
 
 /* ------------------------------------------------------------------ */
 /* small ui atoms                                                      */
@@ -119,22 +151,26 @@ function Badge({ children, tone = "ink" }) {
 /* ------------------------------------------------------------------ */
 export default function QuizForge() {
   const [db, setDb] = useState(null);
+  const [userId, setUserId] = useState(undefined); // undefined = loading, null = logged out
   const [view, setView] = useState("overview");
   const [toast, setToast] = useState(null);
 
-  // load
+  // load db + session
   useEffect(() => {
     (async () => {
-      const existing = await loadDb();
-      if (existing) setDb(existing);
-      else { const s = seed(); setDb(s); persistDb(s); }
+      let existing = await loadDb();
+      if (!existing) { existing = seed(); await persistDb(existing); }
+      setDb(existing);
+      setUserId(await loadSession());
     })();
   }, []);
 
   const save = useCallback((next) => { setDb(next); persistDb(next); }, []);
   const ping = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); };
+  const login = (id) => { persistSession(id); setUserId(id); setView("home"); };
+  const logout = () => { persistSession(null); setUserId(null); };
 
-  if (!db) {
+  if (!db || userId === undefined) {
     return (
       <div className="qf-root" style={{ display: "grid", placeItems: "center", minHeight: 480 }}>
         <Styles />
@@ -146,13 +182,29 @@ export default function QuizForge() {
     );
   }
 
-  const nav = [
-    { id: "overview", icon: "◆", label: "Overview" },
-    { id: "bank", icon: "▤", label: "Question Bank" },
-    { id: "papers", icon: "▦", label: "Papers" },
-    { id: "take", icon: "▶", label: "Take Quiz" },
-    { id: "analytics", icon: "◷", label: "Profiles & Analytics" },
-  ];
+  const me = userId ? db.users.find(u => u.id === userId) : null;
+  if (!me) {
+    return (
+      <div className="qf-root">
+        <Styles />
+        <Auth db={db} save={save} ping={ping} onAuth={login} />
+        {toast && <div className="toast">{toast}</div>}
+      </div>
+    );
+  }
+
+  const nav = me.role === "teacher"
+    ? [
+        { id: "overview", icon: "◆", label: "Overview" },
+        { id: "bank", icon: "▤", label: "Question Bank" },
+        { id: "papers", icon: "▦", label: "Papers" },
+        { id: "analytics", icon: "◷", label: "Profiles & Analytics" },
+      ]
+    : [
+        { id: "take", icon: "▶", label: "Take a Quiz" },
+        { id: "results", icon: "◷", label: "My Results" },
+      ];
+  const activeView = nav.some(n => n.id === view) ? view : nav[0].id;
 
   return (
     <div className="qf-root">
@@ -168,19 +220,30 @@ export default function QuizForge() {
           </div>
           <nav>
             {nav.map(n => (
-              <button key={n.id} className={`nav-item ${view === n.id ? "active" : ""}`} onClick={() => setView(n.id)}>
+              <button key={n.id} className={`nav-item ${activeView === n.id ? "active" : ""}`} onClick={() => setView(n.id)}>
                 <span className="nav-ico">{n.icon}</span>{n.label}
               </button>
             ))}
           </nav>
+          <div className="side-foot">
+            <div className="user-chip">
+              <div className="user-avatar">{me.name.slice(0, 1).toUpperCase()}</div>
+              <div className="user-meta">
+                <div className="user-name">{me.name}</div>
+                <div className="user-role">{me.role}</div>
+              </div>
+            </div>
+            <button className="btn btn-ghost sm logout-btn" onClick={logout}>Log out</button>
+          </div>
         </aside>
 
         <main className="main">
-          {view === "overview" && <Overview db={db} go={setView} />}
-          {view === "bank" && <Bank db={db} save={save} ping={ping} />}
-          {view === "papers" && <Papers db={db} save={save} ping={ping} />}
-          {view === "take" && <TakeFlow db={db} save={save} ping={ping} />}
-          {view === "analytics" && <Analytics db={db} />}
+          {me.role === "teacher" && activeView === "overview" && <Overview attempts={teacherAttempts(db, me)} go={setView} />}
+          {me.role === "teacher" && activeView === "bank" && <Bank db={db} me={me} save={save} ping={ping} />}
+          {me.role === "teacher" && activeView === "papers" && <Papers db={db} me={me} save={save} ping={ping} />}
+          {me.role === "teacher" && activeView === "analytics" && <Analytics attempts={teacherAttempts(db, me)} />}
+          {me.role === "student" && activeView === "take" && <TakeFlow db={db} me={me} save={save} ping={ping} />}
+          {me.role === "student" && activeView === "results" && <StudentResults attempts={studentAttempts(db, me)} me={me} />}
         </main>
       </div>
       {toast && <div className="toast">{toast}</div>}
@@ -189,10 +252,98 @@ export default function QuizForge() {
 }
 
 /* ------------------------------------------------------------------ */
+/* AUTH  (register / login — prototype, browser-local only)            */
+/* ------------------------------------------------------------------ */
+function Auth({ db, save, ping, onAuth }) {
+  const [mode, setMode] = useState("login"); // login | register
+  const [role, setRole] = useState("teacher");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const norm = (e) => e.trim().toLowerCase();
+
+  const submit = () => {
+    const mail = norm(email);
+    if (!mail || !password) { ping("Enter your email and password."); return; }
+    if (mode === "register") {
+      if (!name.trim()) { ping("Enter your name."); return; }
+      if (db.users.some(u => norm(u.email) === mail)) { ping("That email is already registered."); return; }
+      const user = { id: uid(), role, name: name.trim(), email: mail, password, createdAt: Date.now() };
+      save({ ...db, users: [...db.users, user] });
+      ping(`Welcome, ${user.name}!`);
+      onAuth(user.id);
+    } else {
+      const user = db.users.find(u => norm(u.email) === mail && u.password === password);
+      if (!user) { ping("Wrong email or password."); return; }
+      if (user.role !== role) { ping(`That account is a ${user.role}, not a ${role}. Switch the role above.`); return; }
+      onAuth(user.id);
+    }
+  };
+
+  const onKey = (e) => { if (e.key === "Enter") submit(); };
+
+  return (
+    <div className="auth">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <div className="brand-mark">QF</div>
+          <div>
+            <div className="brand-name">QuizForge</div>
+            <div className="auth-tag">MCQ assessment platform</div>
+          </div>
+        </div>
+
+        <div className="auth-tabs">
+          <button className={`auth-tab ${mode === "login" ? "on" : ""}`} onClick={() => setMode("login")}>Log in</button>
+          <button className={`auth-tab ${mode === "register" ? "on" : ""}`} onClick={() => setMode("register")}>Register</button>
+        </div>
+
+        <div className="field"><span>{mode === "register" ? "I am a…" : "Log in as…"}</span>
+          <div className="role-pick">
+            <button className={`role-opt ${role === "teacher" ? "on" : ""}`} onClick={() => setRole("teacher")}>
+              <b>Teacher</b><small>Build question banks & papers</small>
+            </button>
+            <button className={`role-opt ${role === "student" ? "on" : ""}`} onClick={() => setRole("student")}>
+              <b>Student</b><small>Sit papers & track progress</small>
+            </button>
+          </div>
+        </div>
+
+        {mode === "register" && (
+          <label className="field"><span>Full name</span>
+            <input className="input" value={name} onChange={e => setName(e.target.value)} onKeyDown={onKey} placeholder="e.g. Nimal Perera" />
+          </label>
+        )}
+
+        <label className="field"><span>Email</span>
+          <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={onKey} placeholder="you@example.com" />
+        </label>
+        <label className="field"><span>Password</span>
+          <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={onKey} placeholder="••••••••" />
+        </label>
+
+        <button className="btn btn-primary big block" onClick={submit}>
+          {mode === "register" ? `Create ${role} account` : `Log in as ${role}`}
+        </button>
+
+        <div className="auth-hint">
+          {mode === "login"
+            ? <>No account yet? <button className="linkish" onClick={() => setMode("register")}>Register</button></>
+            : <>Already registered? <button className="linkish" onClick={() => setMode("login")}>Log in</button></>}
+        </div>
+        <div className="auth-demo">
+          Demo logins — teacher: <b>teacher@demo.com</b> · student: <b>maya@demo.com</b> · password: <b>demo123</b>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* OVERVIEW                                                            */
 /* ------------------------------------------------------------------ */
-function Overview({ db, go }) {
-  const { attempts } = db;
+function Overview({ attempts, go }) {
   const avg = attempts.length ? Math.round(attempts.reduce((a, x) => a + x.percent, 0) / attempts.length) : 0;
   const passRate = attempts.length ? Math.round(100 * attempts.filter(a => a.percent >= a.passMark).length / attempts.length) : 0;
   const students = new Set(attempts.map(a => a.student)).size;
@@ -220,7 +371,7 @@ function Overview({ db, go }) {
           <h1>Overview</h1>
           <p className="lede">A snapshot of every paper sat across all learners.</p>
         </div>
-        <button className="btn btn-primary" onClick={() => go("take")}>▶ Sit a paper</button>
+        <button className="btn btn-primary" onClick={() => go("papers")}>▦ Manage papers</button>
       </header>
 
       <div className="kpi-row">
@@ -294,8 +445,8 @@ function Kpi({ label, value, sub, tone = "ink" }) {
 /* ------------------------------------------------------------------ */
 /* QUESTION BANK                                                       */
 /* ------------------------------------------------------------------ */
-function Bank({ db, save, ping }) {
-  const blank = { topic: "Algebra", difficulty: "Easy", text: "", options: ["", "", "", ""], correct: 0, explanation: "" };
+function Bank({ db, me, save, ping }) {
+  const blank = { topic: TOPICS[0], difficulty: "Easy", text: "", options: ["", "", "", ""], correct: 0, explanation: "" };
   const [editing, setEditing] = useState(null); // object or null
   const [filter, setFilter] = useState("All");
 
@@ -309,14 +460,15 @@ function Bank({ db, save, ping }) {
       next = { ...db, questions: db.questions.map(q => q.id === editing.id ? editing : q) };
       ping("Question updated.");
     } else {
-      next = { ...db, questions: [...db.questions, { ...editing, id: uid() }] };
+      next = { ...db, questions: [...db.questions, { ...editing, id: uid(), ownerId: me.id }] };
       ping("Question added to bank.");
     }
     save(next); setEditing(null);
   };
   const remove = (id) => { save({ ...db, questions: db.questions.filter(q => q.id !== id) }); ping("Question removed."); };
 
-  const list = db.questions.filter(q => filter === "All" || q.topic === filter);
+  const mine = teacherQuestions(db, me);
+  const list = mine.filter(q => filter === "All" || q.topic === filter);
 
   return (
     <div className="page">
@@ -398,16 +550,19 @@ function Bank({ db, save, ping }) {
 /* ------------------------------------------------------------------ */
 /* PAPERS                                                              */
 /* ------------------------------------------------------------------ */
-function Papers({ db, save, ping }) {
+function Papers({ db, me, save, ping }) {
   const blank = { title: "", desc: "", questionIds: [], timeLimitMin: 10, passMark: 50, antiCheat: "moderate" };
   const [editing, setEditing] = useState(null);
+
+  const mine = teacherPapers(db, me);
+  const myQuestions = teacherQuestions(db, me);
 
   const commit = () => {
     if (!editing.title.trim()) { ping("Give the paper a title."); return; }
     if (editing.questionIds.length === 0) { ping("Add at least one question."); return; }
     let next;
     if (editing.id) next = { ...db, papers: db.papers.map(p => p.id === editing.id ? editing : p) };
-    else next = { ...db, papers: [...db.papers, { ...editing, id: uid() }] };
+    else next = { ...db, papers: [...db.papers, { ...editing, id: uid(), ownerId: me.id }] };
     save(next); setEditing(null); ping("Paper saved.");
   };
   const remove = (id) => { save({ ...db, papers: db.papers.filter(p => p.id !== id) }); ping("Paper deleted."); };
@@ -424,7 +579,7 @@ function Papers({ db, save, ping }) {
       </header>
 
       <div className="grid-cards">
-        {db.papers.map(p => {
+        {mine.map(p => {
           const attempts = db.attempts.filter(a => a.paperId === p.id);
           return (
             <div className="card paper-card" key={p.id}>
@@ -444,7 +599,7 @@ function Papers({ db, save, ping }) {
             </div>
           );
         })}
-        {db.papers.length === 0 && <div className="empty">No papers yet — create one.</div>}
+        {mine.length === 0 && <div className="empty">No papers yet — create one.</div>}
       </div>
 
       {editing && (
@@ -466,13 +621,14 @@ function Papers({ db, save, ping }) {
             </div>
             <div className="field"><span>Pick questions ({editing.questionIds.length} selected)</span>
               <div className="picker">
-                {db.questions.map(q => (
+                {myQuestions.map(q => (
                   <label key={q.id} className={`pick ${editing.questionIds.includes(q.id) ? "on" : ""}`}>
                     <input type="checkbox" checked={editing.questionIds.includes(q.id)} onChange={() => toggleQ(q.id)} />
                     <span className="pick-tags"><Badge tone="amber">{q.topic}</Badge><Badge tone="muted">{q.difficulty}</Badge></span>
                     <span className="pick-text">{q.text}</span>
                   </label>
                 ))}
+                {myQuestions.length === 0 && <div className="empty" style={{ padding: 20 }}>Add questions in the Question Bank first.</div>}
               </div>
             </div>
             <div className="modal-foot">
@@ -489,10 +645,9 @@ function Papers({ db, save, ping }) {
 /* ------------------------------------------------------------------ */
 /* TAKE QUIZ  (timer + anti-cheat + auto marking)                      */
 /* ------------------------------------------------------------------ */
-function TakeFlow({ db, save, ping }) {
+function TakeFlow({ db, me, save, ping }) {
   const [stage, setStage] = useState("lobby"); // lobby | live | result
   const [paper, setPaper] = useState(null);
-  const [student, setStudent] = useState("");
   const [questions, setQuestions] = useState([]);
   const [answers, setAnswers] = useState({});
   const [idx, setIdx] = useState(0);
@@ -503,7 +658,6 @@ function TakeFlow({ db, save, ping }) {
   const [result, setResult] = useState(null);
 
   const begin = () => {
-    if (!student.trim()) { ping("Enter your name first."); return; }
     if (!paper) { ping("Choose a paper."); return; }
     const base = paper.questionIds.map(id => db.questions.find(q => q.id === id)).filter(Boolean);
     // Randomise question order and each question's options, fresh per attempt,
@@ -522,7 +676,7 @@ function TakeFlow({ db, save, ping }) {
     });
     const score = detail.filter(d => d.isCorrect).length;
     const attempt = {
-      id: uid(), paperId: paper.id, paperTitle: paper.title, student: student.trim(),
+      id: uid(), paperId: paper.id, paperTitle: paper.title, studentId: me.id, student: me.name,
       detail, score, total: detail.length, percent: Math.round(100 * score / detail.length),
       passMark: paper.passMark, timeSpentSec: spent, violations, finishedAt: Date.now(),
       autoSubmitted: auto,
@@ -530,7 +684,7 @@ function TakeFlow({ db, save, ping }) {
     save({ ...db, attempts: [...db.attempts, attempt] });
     setResult({ attempt, questions });
     setStage("result");
-  }, [answers, questions, paper, student, violations, db, save]);
+  }, [answers, questions, paper, me, violations, db, save]);
 
   // timer
   useEffect(() => {
@@ -566,9 +720,8 @@ function TakeFlow({ db, save, ping }) {
   if (stage === "lobby") {
     return (
       <div className="page">
-        <header className="page-head"><div><h1>Take a Quiz</h1><p className="lede">Pick a paper, identify yourself, and sit it under exam conditions.</p></div></header>
+        <header className="page-head"><div><h1>Take a Quiz</h1><p className="lede">Sitting as <b>{me.name}</b>. Pick a paper and sit it under exam conditions.</p></div></header>
         <div className="card lobby">
-          <label className="field"><span>Your name</span><input className="input" value={student} onChange={e => setStudent(e.target.value)} placeholder="e.g. Maya Fernando" /></label>
           <div className="field"><span>Choose a paper</span>
             <div className="paper-choices">
               {db.papers.map(p => (
@@ -578,6 +731,7 @@ function TakeFlow({ db, save, ping }) {
                   <div className="choice-guard"><Badge tone={p.antiCheat === "strict" ? "red" : p.antiCheat === "moderate" ? "amber" : "muted"}>{p.antiCheat}</Badge></div>
                 </button>
               ))}
+              {db.papers.length === 0 && <div className="empty">No papers are available yet — check back once a teacher publishes one.</div>}
             </div>
           </div>
           <div className="exam-rules">
@@ -598,7 +752,7 @@ function TakeFlow({ db, save, ping }) {
       <div className="page exam">
         {warn && <div className="cheat-warn">⚠ {warn} <span className="vio">Flags: {violations}</span></div>}
         <div className="exam-bar">
-          <div className="exam-meta"><b>{paper.title}</b> · {student}</div>
+          <div className="exam-meta"><b>{paper.title}</b> · {me.name}</div>
           <div className={`timer ${low ? "low" : ""}`}>⏱ {fmtTime(secsLeft)}</div>
         </div>
         <div className="exam-grid">
@@ -723,16 +877,16 @@ function Result({ result, onDone }) {
 /* ------------------------------------------------------------------ */
 /* ANALYTICS + STUDENT PROFILING                                       */
 /* ------------------------------------------------------------------ */
-function Analytics({ db }) {
-  const students = useMemo(() => [...new Set(db.attempts.map(a => a.student))].sort(), [db.attempts]);
+function Analytics({ attempts }) {
+  const students = useMemo(() => [...new Set(attempts.map(a => a.student))].sort(), [attempts]);
   const [sel, setSel] = useState(students[0] || null);
 
   const board = useMemo(() => students.map(s => {
-    const at = db.attempts.filter(a => a.student === s);
+    const at = attempts.filter(a => a.student === s);
     const avg = Math.round(at.reduce((a, x) => a + x.percent, 0) / at.length);
     const best = Math.max(...at.map(a => a.percent));
     return { s, n: at.length, avg, best, flags: at.reduce((a, x) => a + x.violations, 0) };
-  }).sort((a, b) => b.avg - a.avg), [students, db.attempts]);
+  }).sort((a, b) => b.avg - a.avg), [students, attempts]);
 
   if (students.length === 0) return <div className="page"><header className="page-head"><div><h1>Profiles & Analytics</h1></div></header><div className="empty">No attempts yet — sit a paper to generate profiles.</div></div>;
 
@@ -754,14 +908,34 @@ function Analytics({ db }) {
             </tbody>
           </table>
         </div>
-        <Profile db={db} student={sel} />
+        <Profile attempts={attempts} student={sel} />
       </div>
     </div>
   );
 }
 
-function Profile({ db, student }) {
-  const at = useMemo(() => db.attempts.filter(a => a.student === student).sort((a, b) => a.finishedAt - b.finishedAt), [db.attempts, student]);
+/* ------------------------------------------------------------------ */
+/* STUDENT RESULTS  (a student's own profile)                          */
+/* ------------------------------------------------------------------ */
+function StudentResults({ attempts, me }) {
+  if (attempts.length === 0) {
+    return (
+      <div className="page">
+        <header className="page-head"><div><h1>My Results</h1><p className="lede">Your scores, mastery and progress appear here once you sit a paper.</p></div></header>
+        <div className="empty">No attempts yet — head to “Take a Quiz” to sit your first paper.</div>
+      </div>
+    );
+  }
+  return (
+    <div className="page">
+      <header className="page-head"><div><h1>My Results</h1><p className="lede">Your mastery, trend and working-style read across every paper you've sat.</p></div></header>
+      <Profile attempts={attempts} student={me.name} />
+    </div>
+  );
+}
+
+function Profile({ attempts, student }) {
+  const at = useMemo(() => attempts.filter(a => a.student === student).sort((a, b) => a.finishedAt - b.finishedAt), [attempts, student]);
 
   const topicMastery = useMemo(() => {
     const acc = {};
@@ -875,8 +1049,29 @@ function Styles() {
 .nav-item:hover{background:rgba(255,255,255,.06); color:var(--paper);}
 .nav-item.active{background:var(--amber); color:#fff; font-weight:500;}
 .nav-ico{font-size:13px; width:16px; text-align:center;}
-.side-foot{margin-top:auto; display:flex; flex-direction:column; gap:6px; border-top:1px solid rgba(255,255,255,.1); padding-top:16px;}
+.side-foot{margin-top:auto; display:flex; flex-direction:column; gap:10px; border-top:1px solid rgba(255,255,255,.1); padding-top:16px;}
 .stat-mini{font-size:12px; color:rgba(255,255,255,.55);} .stat-mini b{color:var(--amber-soft); font-weight:600;}
+.user-chip{display:flex; align-items:center; gap:10px;}
+.user-avatar{width:36px; height:36px; border-radius:50%; background:var(--amber); color:#fff; display:grid; place-items:center; font-weight:700; font-size:15px; flex-shrink:0;}
+.user-name{font-size:13px; font-weight:600; color:var(--paper);}
+.user-role{font-size:11px; color:rgba(255,255,255,.5); text-transform:capitalize;}
+.logout-btn{color:rgba(255,255,255,.8); border-color:rgba(255,255,255,.18); background:transparent;}
+.logout-btn:hover{background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.35);}
+/* auth */
+.auth{min-height:100vh; display:grid; place-items:center; background:var(--paper); padding:24px;}
+.auth-card{background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:30px; width:420px; max-width:100%; box-shadow:0 12px 40px rgba(21,35,63,.08);}
+.auth-brand{display:flex; align-items:center; gap:12px; margin-bottom:22px;}
+.auth-tag{font-size:11px; color:var(--ink-soft); letter-spacing:.3px;}
+.auth-tabs{display:grid; grid-template-columns:1fr 1fr; gap:6px; background:var(--paper); border:1px solid var(--line); border-radius:11px; padding:4px; margin-bottom:20px;}
+.auth-tab{padding:9px; border:none; background:none; border-radius:8px; font-family:inherit; font-size:14px; font-weight:500; color:var(--ink-soft); cursor:pointer; transition:.15s;}
+.auth-tab.on{background:var(--surface2); color:var(--ink); box-shadow:0 1px 4px rgba(21,35,63,.1);}
+.role-pick{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+.role-opt{display:flex; flex-direction:column; gap:3px; text-align:left; padding:12px; border:1.5px solid var(--line); border-radius:11px; background:var(--surface2); cursor:pointer; font-family:inherit; transition:.15s;}
+.role-opt:hover{border-color:var(--amber-soft);} .role-opt.on{border-color:var(--amber); background:#eef4ff;}
+.role-opt b{font-size:14px; color:var(--ink);} .role-opt small{font-size:11px; color:var(--ink-soft); line-height:1.3;}
+.auth-hint{text-align:center; font-size:13px; color:var(--ink-soft); margin-top:14px;}
+.linkish{background:none; border:none; color:var(--amber); font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; padding:0;}
+.auth-demo{margin-top:16px; padding:10px 12px; background:var(--paper); border:1px dashed var(--line); border-radius:9px; font-size:11.5px; color:var(--ink-soft); line-height:1.5; text-align:center;}
 /* main */
 .main{padding:30px 34px; overflow-y:auto; overflow-x:hidden; max-height:100vh; background:var(--paper);}
 .page{animation:fadeUp .5s ease;} @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
